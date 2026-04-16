@@ -217,7 +217,7 @@
             window.addEventListener('resize', onWindowResize);
 
             // 已改為純相對位址，移除環境判斷
-            const modelUrl = './AvatarSample_W.vrm';
+            const modelUrl = './jerry.vrm';
             
             loadVRM(modelUrl);
 
@@ -341,7 +341,7 @@
                     console.error('模型載入失敗:', error);
                     if(loadingUI) loadingUI.classList.add('hidden');
                     if(errorUI) {
-                        errorUI.textContent = '無法載入預設模型 AvatarSample_W.vrm，請確認檔案路徑。';
+                        errorUI.textContent = '無法載入預設模型 jerry.vrm，請確認檔案路徑。';
                         errorUI.classList.remove('hidden');
                     }
                 }
