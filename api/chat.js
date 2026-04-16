@@ -1,29 +1,15 @@
 // 簡易的 IP Rate Limiting 狀態儲存 (在 Vercel Serverless 中具備短時間防護作用)
 const rateLimitMap = new Map();
 const RATE_LIMIT_WINDOW_MS = 60000; // 1 分鐘
-const MAX_REQUESTS_PER_WINDOW = 15; // 每分鐘最多 15 次請求
+const MAX_REQUESTS_PER_WINDOW = 30; // 每分鐘最多 30 次請求
 
 export default async function handler(req, res) {
-    // 1. 設定 CORS 標頭 - 允許你的網域連線
-    const allowedOrigins = [
-        'https://vtuber-3dgame.vercel.app', 
-        'https://davidkuodcam-crypto.github.io',
-        'http://localhost:3000',
-        'http://127.0.0.1:5500'
-    ];
-    const origin = req.headers.origin;
-    
-    // 測試期間若遇到跨域問題，可暫時將其改為 res.setHeader('Access-Control-Allow-Origin', '*');
-    if (allowedOrigins.includes(origin) || (origin && origin.includes('localhost'))) {
-        res.setHeader('Access-Control-Allow-Origin', origin);
-    } else {
-        res.setHeader('Access-Control-Allow-Origin', '*');
-    }
-
+    // 1. 設定 CORS 標頭，允許 localhost 與您的部署網域
+    res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'OPTIONS, POST');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-    // 2. 處理瀏覽器的預檢請求 (Preflight)
+    // 2. 處理預檢請求 (Preflight)
     if (req.method === 'OPTIONS') {
         return res.status(200).end();
     }
@@ -40,33 +26,35 @@ export default async function handler(req, res) {
     }
 
     try {
-        const { contents, knowledgeBase } = req.body;
+        const { contents, systemInstruction, knowledgeBase } = req.body;
 
-        // 4. 定義系統指令與角色設定
-        // 這裡強制美智以溫柔的語氣回答，並要求回傳 JSON 格式以便前端解析表情
-        const systemPrompt = `你是一個溫柔且充滿同理心的「考試解憂傾聽者」，名字叫「美智」。
-你的對象是文藻外語大學的學生。你的目標是聽他們訴說考試壓力，給予情感支持。
+        // 確保提取正確的系統指令
+        const safeSystemPrompt = systemInstruction?.parts?.[0]?.text || "你是一個專業的 AI 虛擬助教。";
+        const safeKnowledgeBase = knowledgeBase || "";
 
-【知識庫內容】：
-${knowledgeBase || "文藻校園環境溫馨，圖書館 8 樓是讀書聖地。考多益可以多聽聽力，累了就去買大苑子。"}
+        // 4. 構建原本要求的系統指令格式，強制回傳 JSON
+        const fullSystemInstruction = `${safeSystemPrompt}
 
-【回覆規範】：
-請務必「只」回傳純 JSON 格式，不要包含文字說明或 \`\`\`json 標籤。
+【重要指示】
+為了讓系統正確解析動作，請務必「只」回傳純 JSON 格式的文字，不要加上 \`\`\`json 標籤或任何說明文字。
 格式範例：
 {
-  "reply": "你的回覆文字",
-  "expression": "情緒(relaxed, happy, surprised, sad, angry)",
-  "specialAction": "none"
-}`;
+  "reply": "你的回覆內容",
+  "expression": "情緒(neutral, happy, angry, sad, relaxed, surprised)",
+  "specialAction": "動作(none, blink, blinkLeft, blinkRight, aa)",
+  "actionDuration": 3
+}
 
-        // 5. 封裝要傳送給 Google Gemini 的 Payload
+【知識庫內容】
+${safeKnowledgeBase}`;
+
         const geminiPayload = {
             contents: contents,
-            systemInstruction: { parts: [{ text: systemPrompt }] },
+            systemInstruction: { parts: [{ text: fullSystemInstruction }] },
             tools: [{ google_search: {} }] 
         };
 
-        // 6. 呼叫 Google Gemini API (使用穩定的 1.5-flash)
+        // 5. 呼叫 Google Gemini API (使用穩定的 1.5-flash 版本)
         const googleApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
         
         const response = await fetch(googleApiUrl, {
@@ -79,14 +67,20 @@ ${knowledgeBase || "文藻校園環境溫馨，圖書館 8 樓是讀書聖地。
 
         if (!response.ok) {
             console.error("Google API 報錯:", data);
-            return res.status(response.status).json({ error: "API 失敗", details: data.error?.message });
+            return res.status(response.status).json({ 
+                error: "API 請求失敗", 
+                details: data.error?.message || "未知錯誤" 
+            });
         }
 
-        // 7. 回傳結果給前端
+        // 6. 回傳結果給前端
         return res.status(200).json(data);
 
     } catch (error) {
         console.error("Server Error:", error);
-        return res.status(500).json({ error: '內部伺服器錯誤', message: error.message });
+        return res.status(500).json({ 
+            error: '內部伺服器錯誤', 
+            message: error.message 
+        });
     }
 }
