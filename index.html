@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AI 虛擬助教</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* 加入 touch-action: none 防止手機滑動時觸發下拉更新或返回手勢 */
+        body { margin: 0; overflow: hidden; background-color: #1a202c; touch-action: none; }
+        #canvas-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 0; }
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; pointer-events: none; }
+        .pointer-events-auto { pointer-events: auto; }
+        
+        /* 隱藏滾動條但保留滾動功能 (針對對話框內部) */
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+                "@pixiv/three-vrm": "https://unpkg.com/@pixiv/three-vrm@3.2.0/lib/three-vrm.module.js"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+
+    <div id="ui-layer" class="flex flex-col justify-end p-4 relative">
+        
+        <div class="absolute bottom-6 left-1/2 transform -translate-x-1/2 w-[calc(100%-2rem)] sm:w-full max-w-lg pointer-events-auto flex flex-col gap-3 bg-white/10 backdrop-blur-sm p-4 rounded-2xl shadow-sm border border-white/30 z-10 transition-all duration-300">
+            
+            <div id="chat-bubble" class="hidden px-2 max-h-40 overflow-y-auto no-scrollbar">
+                <p id="chat-text" class="text-lg text-blue-900 font-medium leading-relaxed drop-shadow-sm"></p>
+            </div>
+
+            <div class="flex gap-2 w-full">
+                <button id="mic-btn" class="bg-white/20 hover:bg-white/30 backdrop-blur text-blue-900 px-3 py-3 rounded-xl shadow-inner border border-blue-900/10 transition-colors shrink-0 flex items-center justify-center" title="語音輸入">
+                    <svg id="mic-icon" class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"></path>
+                    </svg>
+                </button>
+
+                <input type="text" id="chat-input" placeholder="與角色對話..." class="flex-1 bg-white/20 text-blue-900 placeholder-blue-800/50 px-4 py-3 rounded-xl border border-blue-900/10 focus:outline-none focus:border-blue-900/30 focus:bg-white/40 shadow-inner text-base transition-colors font-medium" />
+                <button id="send-btn" class="bg-blue-800/70 hover:bg-blue-700/80 active:scale-95 active:bg-blue-900 backdrop-blur text-white px-5 py-3 rounded-xl shadow transition-all duration-150 font-bold text-base shrink-0">發送</button>
+            </div>
+        </div>
+
+        <div class="flex justify-between items-end w-full">
+            
+            <div class="hidden bg-gray-900/70 backdrop-blur-md text-white p-4 rounded-xl shadow-xl border border-gray-700/50 max-w-xs pointer-events-auto flex-col gap-3">
+                <div class="flex items-center justify-between">
+                    <h1 class="text-lg font-bold text-blue-400">AI 虛擬助教</h1>
+                    <div class="flex items-center gap-3">
+                        <div id="status-light" class="w-3 h-3 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.8)] transition-colors" title="API狀態：準備就緒"></div>
+                    </div>
+                </div>
+                <p class="text-xs text-gray-300">系統已自動載入預設角色模型。您可以直接與其展開對話。</p>
+                
+                <div id="loading-status" class="mt-3 text-xs text-yellow-400 flex items-center justify-center">
+                    <svg class="animate-spin -ml-1 mr-2 h-3 w-3 text-yellow-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    模型載入中...
+                </div>
+                <div id="error-status" class="mt-3 text-xs text-red-400 hidden text-center"></div>
+            </div>
+
+            <div class="hidden bg-gray-900/70 backdrop-blur-md text-white p-3 rounded-xl shadow-lg border border-gray-700/50 text-xs pointer-events-auto">
+                <h3 class="font-bold text-gray-200 mb-1 border-b border-gray-600 pb-1">操作說明</h3>
+                <ul class="space-y-1 text-gray-400">
+                    <li><span class="text-blue-400 font-bold">左鍵</span> : 旋轉視角 / <span class="text-blue-400 font-bold">右鍵</span> : 平移</li>
+                    <li><span class="text-blue-400 font-bold">滾輪</span> : 縮放</li>
+                </ul>
+            </div>
+
+        </div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+
+        // --- 全域變數 ---
+        let scene, camera, renderer, controls;
+        let currentVrm = undefined;
+        let particles;
+        const clock = new THREE.Clock();
+
+        // 知識庫與設定變數
+        let knowledgeBaseText = "";
+        let systemPromptText = "你是一個擁有 3D 虛擬身體的 AI 虛擬助教。你的名字叫做『美智』。當使用者詢問你的名字時，請務必回答『美智』。若使用者要求你做動作（如閉眼、張口等），請在文字回覆中自然地答應，並在 JSON 中設定對應動作。絕對不要說自己無法做動作或沒有身體！回答要簡短生動。";
+        let openingPhrase = "您好！我是美智，文藻的 AI 虛擬助教，有什麼我可以幫忙的嗎？";
+
+        // 表情控制變數
+        let expressionTimer = 0;
+        let expressionBlend = 1;
+        let currentExpression = 'neutral';
+        let targetExpression = 'neutral';
+        const expressions = ['happy', 'angry', 'sad', 'relaxed', 'surprised', 'neutral'];
+
+        // 特殊動作控制變數
+        let activeSpecialAction = null;
+        let specialActionTimer = 0;
+
+        // 對話與語音變數
+        let isSpeaking = false;
+        let lipSyncTimer = 0;
+        let conversationHistory = [];
+
+        // 新增全域變數，用於追蹤是否要自動重啟麥克風
+        let autoRestartMic = false;
+
+        // --- 載入外部設定檔 (知識庫與提示詞) ---
+        async function loadConfig() {
+            try {
+                // 已全數改為相對位址，移除環境判斷
+                const promptUrl = './prompt.txt';
+                const kbUrl = './knowledgebase.txt';
+
+                const [promptRes, kbRes] = await Promise.all([
+                    fetch(promptUrl).catch(() => null),
+                    fetch(kbUrl).catch(() => null)
+                ]);
+
+                if (kbRes && kbRes.ok) {
+                    knowledgeBaseText = await kbRes.text();
+                    console.log("知識庫載入成功");
+                }
+
+                if (promptRes && promptRes.ok) {
+                    const fullPromptText = await promptRes.text();
+                    // 使用正則表達式，同時支援 === 或 --- 作為分隔符號
+                    const parts = fullPromptText.split(/[=-]{3}\s*提示詞\s*[=-]{3}/);
+                    if (parts.length > 1) {
+                        openingPhrase = parts[0].replace(/[=-]{3}\s*開場詞\s*[=-]{3}/, '').trim();
+                        // 修正關鍵：將名字「美智」的指令置於提示詞的最前方，確保 AI 優先讀取
+                        systemPromptText = "你的唯一名字是『美智』。請記住：『文藻AI虛擬助教』只是你的職稱職位，並非你的名字。當被問及姓名時，請回答『美智』。" + parts[1].trim() + " (備註：你擁有3D虛擬身體，被要求做動作時請配合。)";
+                    } else {
+                        systemPromptText = fullPromptText.trim();
+                    }
+                    console.log("提示詞載入成功");
+                }
+            } catch (error) {
+                console.warn("載入設定檔失敗，將使用預設設定", error);
+            }
+        }
+
+        // --- 觸發開場白 ---
+        function triggerOpeningPhrase() {
+            if (!openingPhrase) return;
+            
+            const chatBubble = document.getElementById('chat-bubble');
+            const chatText = document.getElementById('chat-text');
+            
+            chatBubble.classList.remove('hidden');
+            chatText.innerHTML = `${openingPhrase}`; // 已移除「角色：」
+            
+            speakAndLipSync(openingPhrase);
+            
+            conversationHistory.push({ role: "model", parts: [{ text: JSON.stringify({ reply: openingPhrase, expression: "happy", specialAction: "none", actionDuration: 3 }) }] });
+        }
+
+        // --- 初始化場景 ---
+        async function init() {
+            const container = document.getElementById('canvas-container');
+
+            await loadConfig();
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xdbe3ea);
+            scene.fog = new THREE.Fog(0xdbe3ea, 10, 50);
+
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 1.45, -1.6); 
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            renderer.outputColorSpace = THREE.SRGBColorSpace;
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            container.appendChild(renderer.domElement);
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.screenSpacePanning = true;
+            controls.target.set(0, 1.3, 0); 
+            controls.update();
+
+            setupEnvironment();
+
+            window.addEventListener('resize', onWindowResize);
+
+            // 已改為純相對位址，移除環境判斷
+            const modelUrl = './AvatarSample_W.vrm';
+            
+            loadVRM(modelUrl);
+
+            animate();
+        }
+
+        function setupEnvironment() {
+            const ambientLight = new THREE.HemisphereLight(0xffffff, 0x999999, 0.8);
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xfff0dd, 2.0);
+            directionalLight.position.set(2, 5, 3);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 2048;
+            directionalLight.shadow.mapSize.height = 2048;
+            directionalLight.shadow.bias = -0.001;
+            scene.add(directionalLight);
+
+            const fillLight = new THREE.DirectionalLight(0xcceeff, 1.2);
+            fillLight.position.set(-2, 2, 2);
+            scene.add(fillLight);
+
+            const floorGeometry = new THREE.PlaneGeometry(50, 50);
+            const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x8a95a5, roughness: 0.6, metalness: 0.1 });
+            const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+            floor.rotation.x = -Math.PI / 2;
+            floor.receiveShadow = true;
+            scene.add(floor);
+
+            const gridHelper = new THREE.GridHelper(50, 100, 0xb0bac5, 0x8a95a5);
+            gridHelper.position.y = 0.01;
+            gridHelper.material.transparent = true;
+            gridHelper.material.opacity = 0.5;
+            scene.add(gridHelper);
+
+            const pedestalGeometry = new THREE.CylinderGeometry(0.8, 1, 0.1, 32);
+            const pedestalMaterial = new THREE.MeshStandardMaterial({ color: 0xdbe3ea, roughness: 0.3, metalness: 0.2 });
+            const pedestal = new THREE.Mesh(pedestalGeometry, pedestalMaterial);
+            pedestal.position.y = 0.05;
+            pedestal.receiveShadow = true;
+            pedestal.castShadow = true;
+            scene.add(pedestal);
+
+            const ringGeometry = new THREE.RingGeometry(0.85, 0.9, 32);
+            const ringMaterial = new THREE.MeshBasicMaterial({ color: 0xffaa00, side: THREE.DoubleSide, transparent: true, opacity: 0.8 });
+            const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+            ring.rotation.x = -Math.PI / 2;
+            ring.position.y = 0.11;
+            scene.add(ring);
+
+            const particleCount = 200;
+            const particleGeometry = new THREE.BufferGeometry();
+            const particlePositions = new Float32Array(particleCount * 3);
+            const particleColors = new Float32Array(particleCount * 3);
+            const color = new THREE.Color();
+            
+            for(let i = 0; i < particleCount; i++) {
+                particlePositions[i*3] = (Math.random() - 0.5) * 10;
+                particlePositions[i*3+1] = Math.random() * 5;
+                particlePositions[i*3+2] = (Math.random() - 0.5) * 10;
+                color.setHSL(Math.random(), 1.0, 0.5);
+                particleColors[i*3] = color.r;
+                particleColors[i*3+1] = color.g;
+                particleColors[i*3+2] = color.b;
+            }
+            particleGeometry.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+            particleGeometry.setAttribute('color', new THREE.BufferAttribute(particleColors, 3));
+            
+            const particleMaterial = new THREE.PointsMaterial({ size: 0.08, transparent: true, opacity: 0.9, vertexColors: true });
+            particles = new THREE.Points(particleGeometry, particleMaterial);
+            scene.add(particles);
+        }
+
+        function loadVRM(url) {
+            const loadingUI = document.getElementById('loading-status');
+            const errorUI = document.getElementById('error-status');
+            if(loadingUI) loadingUI.classList.remove('hidden');
+            if(errorUI) errorUI.classList.add('hidden');
+
+            const loader = new GLTFLoader();
+            loader.register((parser) => new VRMLoaderPlugin(parser));
+
+            loader.load(
+                url,
+                (gltf) => {
+                    const vrm = gltf.userData.vrm;
+                    if (currentVrm) scene.remove(currentVrm.scene);
+                    VRMUtils.removeUnnecessaryVertices(gltf.scene);
+                    VRMUtils.removeUnnecessaryJoints(gltf.scene);
+
+                    vrm.scene.traverse((obj) => {
+                        obj.frustumCulled = false;
+                        if (obj.isMesh) {
+                            obj.castShadow = true;
+                            obj.receiveShadow = true;
+                        }
+                    });
+
+                    if (vrm.humanoid) {
+                        const leftUpperArm = vrm.humanoid.getNormalizedBoneNode('leftUpperArm');
+                        const rightUpperArm = vrm.humanoid.getNormalizedBoneNode('rightUpperArm');
+                        if (leftUpperArm) leftUpperArm.rotation.z = -1.1; 
+                        if (rightUpperArm) rightUpperArm.rotation.z = 1.1; 
+                    }
+
+                    vrm.scene.position.y = 0.1;
+                    vrm.scene.rotation.y = Math.PI;
+                    scene.add(vrm.scene);
+                    currentVrm = vrm;
+
+                    if(loadingUI) loadingUI.classList.add('hidden');
+                    console.log('模型自動載入成功!');
+                    triggerOpeningPhrase();
+                },
+                undefined,
+                (error) => {
+                    console.error('模型載入失敗:', error);
+                    if(loadingUI) loadingUI.classList.add('hidden');
+                    if(errorUI) {
+                        errorUI.textContent = '無法載入預設模型 AvatarSample_W.vrm，請確認檔案路徑。';
+                        errorUI.classList.remove('hidden');
+                    }
+                }
+            );
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            const time = clock.getElapsedTime();
+
+            if (currentVrm) {
+                if (currentVrm.humanoid) {
+                    const chest = currentVrm.humanoid.getNormalizedBoneNode('chest');
+                    if (chest) chest.rotation.x = Math.sin(time * 1.5) * 0.015;
+                }
+
+                if (currentVrm.expressionManager) {
+                    // 1. 隨機表情計時器邏輯
+                    expressionTimer += delta;
+                    if (expressionTimer > 4.0) {
+                        expressionTimer = 0;
+                        currentExpression = targetExpression;
+                        targetExpression = expressions[Math.floor(Math.random() * expressions.length)];
+                        expressionBlend = 0;
+                    }
+                    if (expressionBlend < 1.0) {
+                        expressionBlend += delta * 2.0; 
+                        if (expressionBlend > 1.0) expressionBlend = 1.0;
+                    }
+
+                    // 2. 先清除所有表情
+                    expressions.forEach(exp => currentVrm.expressionManager.setValue(exp, 0));
+
+                    // 3. 特殊動作處理
+                    if (specialActionTimer > 0 && activeSpecialAction) {
+                        specialActionTimer -= delta;
+                        currentVrm.expressionManager.setValue(activeSpecialAction, 1.0);
+                    } else if (activeSpecialAction) {
+                        currentVrm.expressionManager.setValue(activeSpecialAction, 0);
+                        activeSpecialAction = null;
+                    }
+
+                    // 4. 講話時強制微笑且同步嘴型，不講話時才隨機表情
+                    if (isSpeaking) {
+                        currentVrm.expressionManager.setValue('happy', 1.0);
+                        
+                        lipSyncTimer += delta * 15;
+                        const mouthOpenness = (Math.sin(lipSyncTimer) + 1) / 2; 
+                        if (activeSpecialAction !== 'aa') {
+                            currentVrm.expressionManager.setValue('aa', mouthOpenness * (Math.random() * 0.4 + 0.6));
+                        }
+                    } else {
+                        currentVrm.expressionManager.setValue(currentExpression, 1.0 - expressionBlend);
+                        currentVrm.expressionManager.setValue(targetExpression, expressionBlend);
+                        
+                        if (activeSpecialAction !== 'aa') {
+                            currentVrm.expressionManager.setValue('aa', 0);
+                        }
+                    }
+                }
+                currentVrm.update(delta);
+            }
+
+            if (particles) particles.rotation.y += delta * 0.05;
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- Gemini API 互動邏輯 (串接後端) ---
+        const chatInput = document.getElementById('chat-input');
+        const sendBtn = document.getElementById('send-btn');
+        const chatBubble = document.getElementById('chat-bubble');
+        const chatText = document.getElementById('chat-text');
+        
+        const statusLight = document.getElementById('status-light');
+
+        function setStatus(status) {
+            if (!statusLight) return;
+            statusLight.className = 'w-3 h-3 rounded-full transition-colors ';
+            if (status === 'connecting') {
+                statusLight.className += 'bg-blue-400 shadow-[0_0_8px_rgba(96,165,250,0.8)] animate-pulse';
+            } else if (status === 'success') {
+                statusLight.className += 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.8)]';
+            } else if (status === 'error') {
+                statusLight.className += 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.8)]';
+            } else {
+                statusLight.className += 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.8)]';
+            }
+        }
+
+        async function fetchWithBackoff(url, options, maxRetries = 5) {
+            const delays = [1000, 2000, 4000, 8000, 16000];
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    const response = await fetch(url, options);
+                    if (response.ok) return response;
+                    if (response.status === 400 || response.status === 403 || response.status === 404) throw new Error(`API Error ${response.status}`);
+                    if (i === maxRetries - 1) throw new Error(`Failed with ${response.status}`);
+                } catch (error) {
+                    if (error.message.includes('400') || error.message.includes('403') || error.message.includes('404')) throw error;
+                    if (i === maxRetries - 1) throw error;
+                }
+                await new Promise(r => setTimeout(r, delays[i]));
+            }
+        }
+
+        async function sendMessage() {
+            const text = chatInput.value.trim();
+            if (!text) return;
+
+            chatInput.value = '';
+            chatBubble.classList.remove('hidden');
+            // 修改使用者提示樣式
+            chatText.innerHTML = `<span class="text-blue-800 text-sm opacity-70">你：${text}</span><br><span class="text-blue-900/60 text-sm animate-pulse">正在思考中...</span>`;
+            setStatus('connecting');
+            conversationHistory.push({ role: "user", parts: [{ text: text }] });
+            
+            // 修正關鍵：在此處強制規定尋找答案的嚴格順序，解決 AI 隨機回答的行為
+            const fullSystemInstruction = `${systemPromptText}\n\n【回答資料來源優先順序】\n1. 優先使用下方的【知識庫內容】來回答。\n2. 若知識庫中找不到答案，請務必使用 Google Search 工具搜尋網路資訊。\n3. 若網路上也找不到，再使用你的內建知識庫。\n4. 若以上皆無明確資訊（尤其是學校科系相關問題），請誠實回答「我不知道」，絕不可自行編造。\n\n【重要指示】\n為了讓系統正確解析動作，請務必「只」回傳純 JSON 格式的文字，不要加上 \`\`\`json 標籤或任何其他說明。JSON 格式必須為：\n{\n  \"reply\": \"你的回覆內容\",\n  \"expression\": \"情緒(neutral, happy, angry, sad, relaxed, surprised)\",\n  \"specialAction\": \"動作(none, blink, blinkLeft, blinkRight, aa)\",\n  \"actionDuration\": 3\n}\n\n【知識庫內容】\n${knowledgeBaseText}`;
+
+            try {
+                const response = await fetchWithBackoff(`/api/chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: conversationHistory,
+                        systemInstruction: { parts: [{ text: fullSystemInstruction }] },
+                        tools: [{ googleSearch: {} }]
+                    })
+                });
+
+                const data = await response.json();
+                
+                if (data.error) throw new Error(data.error);
+
+                const aiText = data.candidates[0].content.parts[0].text;
+                let replyText = aiText;
+                
+                // 強大的 Regex 提取 JSON，並優先顯示 reply 欄位
+                const jsonMatch = aiText.match(/\{[\s\S]*\}/);
+                
+                if (jsonMatch) {
+                    try {
+                        const aiResponse = JSON.parse(jsonMatch[0]);
+                        replyText = aiResponse.reply || "（沒有回覆文字）";
+                        
+                        if (expressions.includes(aiResponse.expression)) {
+                            targetExpression = aiResponse.expression;
+                            expressionBlend = 0;
+                            expressionTimer = -10.0; 
+                        }
+                        if (aiResponse.specialAction && aiResponse.specialAction !== 'none') {
+                            activeSpecialAction = aiResponse.specialAction;
+                            specialActionTimer = aiResponse.actionDuration || 3;
+                        }
+                    } catch (e) {
+                        console.warn("JSON 解析失敗，嘗試清除符號顯示純文字:", e);
+                        replyText = aiText.replace(/\{"reply":/g, "").replace(/"expression":.*/g, "").replace(/[{}"]/g, "").trim();
+                    }
+                }
+
+                setStatus('success');
+                // 更新顯示文字 (已移除 角色： 前綴)
+                chatText.innerHTML = `${replyText}`;
+                speakAndLipSync(replyText);
+                
+                conversationHistory.push({ role: "model", parts: [{ text: jsonMatch ? jsonMatch[0] : aiText }] });
+
+            } catch (error) {
+                console.error("發送訊息失敗:", error);
+                setStatus('error');
+                chatText.innerHTML = `<span class="text-red-600 font-bold">連線失敗，請稍後再試。</span>`;
+                conversationHistory.pop();
+            }
+        }
+
+        // --- 強化 iOS Safari 的發聲與嘴型同步防護 ---
+        window.keepAliveUtterances = [];
+        let speechCheckInterval = null;
+
+        function speakAndLipSync(text) {
+            window.speechSynthesis.cancel();
+            isSpeaking = false;
+            if (speechCheckInterval) clearInterval(speechCheckInterval);
+            
+            if (window.speechSynthesis.resume) window.speechSynthesis.resume();
+
+            const utterance = new SpeechSynthesisUtterance(text);
+            window.keepAliveUtterances.push(utterance);
+            
+            utterance.lang = 'zh-TW';
+            isSpeaking = true; 
+            
+            utterance.onstart = () => { isSpeaking = true; };
+            utterance.onend = () => { 
+                isSpeaking = false; 
+                if (window.keepAliveUtterances.length > 20) window.keepAliveUtterances.length = 0;
+                // 如果需要自動重啟麥克風，則在此時啟動
+                if (autoRestartMic && recognition && !isRecording) {
+                    try {
+                        recognition.start();
+                    } catch (e) {
+                        console.warn("自動重啟麥克風失敗:", e);
+                    }
+                }
+            };
+            utterance.onerror = (e) => {
+                console.warn('語音播放被中斷或發生錯誤:', e);
+                isSpeaking = false;
+                // 發生錯誤也嘗試重啟麥克風
+                if (autoRestartMic && recognition && !isRecording) {
+                    try {
+                        recognition.start();
+                    } catch (err) {
+                        console.warn("自動重啟麥克風失敗:", err);
+                    }
+                }
+            };
+            
+            setTimeout(() => {
+                window.speechSynthesis.speak(utterance);
+            }, 50);
+
+            let confirmStopCount = 0;
+            speechCheckInterval = setInterval(() => {
+                if (!window.speechSynthesis.speaking) {
+                    confirmStopCount++;
+                    if (confirmStopCount > 3) {
+                        isSpeaking = false;
+                        clearInterval(speechCheckInterval);
+                        // 雙重檢查：確保因為某種原因 onend 沒觸發時，也能重啟麥克風
+                        if (autoRestartMic && recognition && !isRecording) {
+                            try {
+                                recognition.start();
+                            } catch (e) {
+                                console.warn("自動重啟麥克風失敗:", e);
+                            }
+                        }
+                    }
+                } else {
+                    confirmStopCount = 0;
+                    isSpeaking = true;
+                }
+            }, 200);
+        }
+
+        function unlockAudioForIOS() {
+            if (window.speechSynthesis.resume) window.speechSynthesis.resume();
+            const silentUtterance = new SpeechSynthesisUtterance(' ');
+            silentUtterance.volume = 0;
+            silentUtterance.rate = 2;
+            window.speechSynthesis.speak(silentUtterance);
+        }
+        
+        const initialUnlock = () => {
+            unlockAudioForIOS();
+            document.removeEventListener('touchstart', initialUnlock);
+            document.removeEventListener('touchend', initialUnlock);
+            document.removeEventListener('click', initialUnlock);
+        };
+        document.addEventListener('touchstart', initialUnlock, { once: true });
+        document.addEventListener('touchend', initialUnlock, { once: true });
+        document.addEventListener('click', initialUnlock, { once: true });
+
+        // --- 語音輸入功能 (Web Speech API) ---
+        const micBtn = document.getElementById('mic-btn');
+        let recognition = null;
+        let isRecording = false;
+        let silenceTimeout = null;
+
+        // 偵測是否為手機或平板裝置 (包含 iPad 與 Android 行動裝置)
+        const isMobileOrTablet = /Mobi|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || (navigator.maxTouchPoints && navigator.maxTouchPoints > 2 && /MacIntel/.test(navigator.platform));
+
+        if (('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) && !isMobileOrTablet) {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            recognition = new SpeechRecognition();
+            recognition.lang = 'zh-TW';
+            recognition.interimResults = true; // 開啟以偵測說話進度
+            recognition.continuous = true;     // 持續聆聽，直到手動停止或超時
+            recognition.maxAlternatives = 1;
+
+            recognition.onstart = function() {
+                isRecording = true;
+                // 改變麥克風按鈕外觀 (紅色呼吸燈)
+                micBtn.classList.remove('bg-white/20', 'text-blue-900');
+                micBtn.classList.add('bg-red-500/80', 'text-white', 'animate-pulse');
+                chatInput.placeholder = "聆聽中... (請說話)";
+                resetSilenceTimeout();
+            };
+
+            recognition.onresult = function(event) {
+                let finalTranscript = '';
+                let interimTranscript = '';
+                
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    if (event.results[i].isFinal) {
+                        finalTranscript += event.results[i][0].transcript;
+                    } else {
+                        interimTranscript += event.results[i][0].transcript;
+                    }
+                }
+                
+                if (finalTranscript !== '') {
+                    // 如果有最終結果，附加到輸入框中 (這裡簡化為直接替換，避免重複)
+                    chatInput.value = finalTranscript;
+                } else if (interimTranscript !== '') {
+                    // 顯示暫時的結果
+                    chatInput.value = interimTranscript;
+                }
+
+                // 只要有結果進來，就重置靜音計時器
+                resetSilenceTimeout();
+            };
+
+            recognition.onerror = function(event) {
+                console.error("語音辨識錯誤:", event.error);
+                // 發生錯誤不一定要清空 autoRestartMic，但通常 no-speech 等錯誤會導致停止
+                if (event.error === 'not-allowed') {
+                    alert('請允許麥克風權限才能使用語音輸入喔！');
+                    autoRestartMic = false;
+                }
+                // 避免在錯誤狀態下無限重啟
+                if (event.error === 'no-speech' || event.error === 'audio-capture') {
+                     // 可選擇是否要處理無語音的情況
+                }
+            };
+
+            recognition.onend = function() {
+                isRecording = false;
+                clearTimeout(silenceTimeout);
+                resetMicUI();
+                
+                // 語音輸入結束後，若有文字則自動觸發發送
+                if (chatInput.value.trim() !== '') {
+                    window.speechSynthesis.cancel();
+                    isSpeaking = false;
+                    unlockAudioForIOS();
+                    sendMessage();
+                    chatInput.value = ''; // 發送後清空
+                } else if (autoRestartMic && !isSpeaking) {
+                    // 如果被意外中斷 (例如沒說話超時)，且設定為自動重啟，則再次啟動
+                     try {
+                        recognition.start();
+                    } catch (e) {
+                        console.warn("重啟麥克風失敗:", e);
+                    }
+                }
+            };
+        } else {
+            // 不支援語音輸入的瀏覽器，或是手機/平板裝置 (隱藏麥克風按鈕)
+            if(micBtn) micBtn.style.display = 'none';
+            console.warn("此瀏覽器不支援 Web Speech API 語音輸入，或是正在使用行動裝置(手機/平板)已自動隱藏");
+        }
+
+        function resetMicUI() {
+            if(!micBtn) return;
+            micBtn.classList.remove('bg-red-500/80', 'text-white', 'animate-pulse');
+            micBtn.classList.add('bg-white/20', 'text-blue-900');
+            chatInput.placeholder = "與角色對話...";
+        }
+
+        // 靜音計時器：2秒不說話自動送出
+        function resetSilenceTimeout() {
+            clearTimeout(silenceTimeout);
+            if (isRecording) {
+                silenceTimeout = setTimeout(() => {
+                    if (recognition && isRecording) {
+                        recognition.stop(); // 停止錄音會觸發 onend，進而發送訊息
+                    }
+                }, 2000); // 2秒鐘
+            }
+        }
+
+        if (micBtn) {
+            micBtn.addEventListener('click', () => {
+                if (!recognition) return;
+                
+                if (isRecording) {
+                    // 使用者手動關閉麥克風
+                    autoRestartMic = false; // 取 configurations自動重啟
+                    recognition.stop();
+                } else {
+                    // 使用者手動開啟麥克風
+                    autoRestartMic = true;  // 設定為自動重啟模式
+                    // 解鎖音訊並中斷目前AI說話
+                    window.speechSynthesis.cancel();
+                    isSpeaking = false;
+                    unlockAudioForIOS();
+                    try {
+                        recognition.start();
+                    } catch (e) {
+                         console.warn("麥克風啟動失敗:", e);
+                    }
+                }
+            });
+        }
+
+        // 隨時點擊發送都能打斷講話
+        sendBtn.addEventListener('click', () => {
+            window.speechSynthesis.cancel();
+            isSpeaking = false;
+            // 手動發送文字時，取消麥克風自動重啟
+            autoRestartMic = false;
+            if(isRecording && recognition) recognition.stop();
+            unlockAudioForIOS();
+            sendMessage();
+        });
+        
+        chatInput.addEventListener('keypress', (e) => { 
+            if (e.key === 'Enter') {
+                window.speechSynthesis.cancel();
+                isSpeaking = false;
+                // 手動發送文字時，取消麥克風自動重啟
+                autoRestartMic = false;
+                if(isRecording && recognition) recognition.stop();
+                unlockAudioForIOS();
+                sendMessage(); 
+            }
+        });
+
+        // 監聽輸入框的改變，如果有手動輸入文字，則取消自動重啟麥克風
+        chatInput.addEventListener('input', () => {
+             if (chatInput.value.trim() !== '') {
+                 autoRestartMic = false;
+             }
+        });
+
+        init();
+    </script>
+</body>
+</html>
