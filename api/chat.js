@@ -54,7 +54,7 @@ ${safeKnowledgeBase}`;
             tools: [{ google_search: {} }] 
         };
 
-        // 5. 呼叫 Google Gemini API (使用穩定的 1.5-flash 版本)
+        // 5. 呼叫 Google Gemini API (使用目前最穩定的 1.5-flash 版本)
         const googleApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
         
         const response = await fetch(googleApiUrl, {
