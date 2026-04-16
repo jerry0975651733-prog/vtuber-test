@@ -8,7 +8,20 @@
     <style>
         /* 加入 touch-action: none 防止手機滑動時觸發下拉更新或返回手勢 */
         body { margin: 0; overflow: hidden; background-color: #1a202c; touch-action: none; }
-        #canvas-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 0; }
+        
+        /* 修改：為 canvas-container 加入咖啡廳背景圖片 */
+        #canvas-container { 
+            width: 100vw; 
+            height: 100vh; 
+            position: absolute; 
+            top: 0; 
+            left: 0; 
+            z-index: 0; 
+            background-image: url('https://images.unsplash.com/photo-1554118811-1e0d58224f24?q=80&w=1920&auto=format&fit=crop');
+            background-size: cover;
+            background-position: center;
+        }
+
         #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; pointer-events: none; }
         .pointer-events-auto { pointer-events: auto; }
         
@@ -176,13 +189,16 @@
             await loadConfig();
 
             scene = new THREE.Scene();
-            scene.background = new THREE.Color(0xdbe3ea);
-            scene.fog = new THREE.Fog(0xdbe3ea, 10, 50);
+            
+            // 變更點：移除單純顏色背景與霧氣，以便顯示下方 CSS 的咖啡廳背景
+            // scene.background = new THREE.Color(0xdbe3ea);
+            // scene.fog = new THREE.Fog(0xdbe3ea, 10, 50);
 
             camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
             camera.position.set(0, 1.45, -1.6); 
 
-            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+            // 變更點：將 alpha 設為 true 讓背景透明
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.shadowMap.enabled = true;
