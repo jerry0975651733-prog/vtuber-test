@@ -105,8 +105,13 @@
         // --- 全域變數 ---
         let scene, camera, renderer, controls;
         let currentVrm = undefined;
-        let particles;
         const clock = new THREE.Clock();
+
+        // 櫻花粒子系統變數
+        const sakuraDummy = new THREE.Object3D();
+        const sakuraMeshes = [];
+        const sakuraData = [];
+        const sakuraCountPerMesh = 200; // 每種透明度 200 片，共計 600 片
 
         // 知識庫與設定變數
         let knowledgeBaseText = "";
@@ -135,14 +140,23 @@
         // --- 載入外部設定檔 (知識庫與提示詞) ---
         async function loadConfig() {
             try {
-                // 已全數改為相對位址，移除環境判斷
                 const promptUrl = './prompt.txt';
                 const kbUrl = './knowledgebase.txt';
+                
+                let promptRes = null;
+                let kbRes = null;
 
-                const [promptRes, kbRes] = await Promise.all([
-                    fetch(promptUrl).catch(() => null),
-                    fetch(kbUrl).catch(() => null)
-                ]);
+                // 新增 try...catch 保護，防止預覽環境下 Blob URL 解析 "./" 本地路徑失敗時拋出 TypeError
+                try {
+                    const [pRes, kRes] = await Promise.all([
+                        fetch(promptUrl).catch(() => null),
+                        fetch(kbUrl).catch(() => null)
+                    ]);
+                    promptRes = pRes;
+                    kbRes = kRes;
+                } catch (e) {
+                    console.warn("預覽環境下無法載入本地設定檔，將使用預設設定", e);
+                }
 
                 if (kbRes && kbRes.ok) {
                     knowledgeBaseText = await kbRes.text();
@@ -151,11 +165,9 @@
 
                 if (promptRes && promptRes.ok) {
                     const fullPromptText = await promptRes.text();
-                    // 使用正則表達式，同時支援 === 或 --- 作為分隔符號
                     const parts = fullPromptText.split(/[=-]{3}\s*提示詞\s*[=-]{3}/);
                     if (parts.length > 1) {
                         openingPhrase = parts[0].replace(/[=-]{3}\s*開場詞\s*[=-]{3}/, '').trim();
-                        // 修正關鍵：將名字「美智」的指令置於提示詞的最前方，確保 AI 優先讀取
                         systemPromptText = "你的唯一名字是『晏韜』。請記住：『文藻AI虛擬助教』只是你的職稱職位，並非你的名字。當被問及姓名時，請回答『晏韜』。" + parts[1].trim() + " (備註：你擁有3D虛擬身體，被要求做動作時請配合。)";
                     } else {
                         systemPromptText = fullPromptText.trim();
@@ -163,7 +175,7 @@
                     console.log("提示詞載入成功");
                 }
             } catch (error) {
-                console.warn("載入設定檔失敗，將使用預設設定", error);
+                console.warn("設定檔載入流程發生錯誤，將使用預設設定", error);
             }
         }
 
@@ -175,7 +187,7 @@
             const chatText = document.getElementById('chat-text');
             
             chatBubble.classList.remove('hidden');
-            chatText.innerHTML = `${openingPhrase}`; // 已移除「角色：」
+            chatText.innerHTML = `${openingPhrase}`; 
             
             speakAndLipSync(openingPhrase);
             
@@ -189,15 +201,10 @@
             await loadConfig();
 
             scene = new THREE.Scene();
-            
-            // 變更點：移除單純顏色背景與霧氣，以便顯示下方 CSS 的咖啡廳背景
-            // scene.background = new THREE.Color(0xdbe3ea);
-            // scene.fog = new THREE.Fog(0xdbe3ea, 10, 50);
 
             camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
             camera.position.set(0, 1.45, -1.6); 
 
-            // 變更點：將 alpha 設為 true 讓背景透明
             renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(window.devicePixelRatio);
@@ -213,12 +220,14 @@
             controls.update();
 
             setupEnvironment();
+            setupSakuraParticles(); // 呼叫新增的櫻花粒子系統設定
 
             window.addEventListener('resize', onWindowResize);
 
-            // 已改為純相對位址，移除環境判斷
-            const modelUrl = './jerry.vrm';
-            
+            // 修正：預覽環境中 './jerry.vrm' 會因為找不到根目錄引發 Failed to parse URL。
+            // 這裡替換為線上穩定的 Pixiv AliciaSolid 測試模型。
+            // 部署至您自己的伺服器時，可再將此行替換回 `const modelUrl = './jerry.vrm';`
+            const modelUrl = 'https://cdn.jsdelivr.net/gh/pixiv/three-vrm@main/packages/three-vrm/examples/models/AliciaSolid.vrm';
             loadVRM(modelUrl);
 
             animate();
@@ -239,59 +248,55 @@
             const fillLight = new THREE.DirectionalLight(0xcceeff, 1.2);
             fillLight.position.set(-2, 2, 2);
             scene.add(fillLight);
+        }
 
-            // 為了讓背景咖啡廳圖片完美顯示，已移除地板(floor)、網格(gridHelper)、底座(pedestal)與發光環(ring)
-            /*
-            const floorGeometry = new THREE.PlaneGeometry(50, 50);
-            const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x8a95a5, roughness: 0.6, metalness: 0.1 });
-            const floor = new THREE.Mesh(floorGeometry, floorMaterial);
-            floor.rotation.x = -Math.PI / 2;
-            floor.receiveShadow = true;
-            scene.add(floor);
+        // --- 新增：櫻花粒子系統初始化 ---
+        function setupSakuraParticles() {
+            // 定義三種不同透明度與顏色的材質，以達成「隨機半透明」效果並提升效能
+            const opacities = [0.5, 0.75, 0.9];
+            const colors = [0xFFC0CB, 0xFFB7C5, 0xFFC0CB];
 
-            const gridHelper = new THREE.GridHelper(50, 100, 0xb0bac5, 0x8a95a5);
-            gridHelper.position.y = 0.01;
-            gridHelper.material.transparent = true;
-            gridHelper.material.opacity = 0.5;
-            scene.add(gridHelper);
+            // 使用 5 邊形圓形幾何體模擬櫻花花瓣 (五角形)
+            const petalGeo = new THREE.CircleGeometry(0.04, 5);
+            // 將高度稍微拉長，使其更接近真實花瓣狀
+            petalGeo.scale(1, 1.3, 1); 
 
-            const pedestalGeometry = new THREE.CylinderGeometry(0.8, 1, 0.1, 32);
-            const pedestalMaterial = new THREE.MeshStandardMaterial({ color: 0xdbe3ea, roughness: 0.3, metalness: 0.2 });
-            const pedestal = new THREE.Mesh(pedestalGeometry, pedestalMaterial);
-            pedestal.position.y = 0.05;
-            pedestal.receiveShadow = true;
-            pedestal.castShadow = true;
-            scene.add(pedestal);
+            for (let i = 0; i < 3; i++) {
+                const material = new THREE.MeshBasicMaterial({
+                    color: colors[i],
+                    side: THREE.DoubleSide,
+                    transparent: true,
+                    opacity: opacities[i],
+                    depthWrite: false // 避免透明物件重疊時產生黑色邊緣
+                });
 
-            const ringGeometry = new THREE.RingGeometry(0.85, 0.9, 32);
-            const ringMaterial = new THREE.MeshBasicMaterial({ color: 0xffaa00, side: THREE.DoubleSide, transparent: true, opacity: 0.8 });
-            const ring = new THREE.Mesh(ringGeometry, ringMaterial);
-            ring.rotation.x = -Math.PI / 2;
-            ring.position.y = 0.11;
-            scene.add(ring);
-            */
+                // 使用 InstancedMesh 大幅優化效能
+                const mesh = new THREE.InstancedMesh(petalGeo, material, sakuraCountPerMesh);
+                scene.add(mesh);
+                sakuraMeshes.push(mesh);
 
-            const particleCount = 200;
-            const particleGeometry = new THREE.BufferGeometry();
-            const particlePositions = new Float32Array(particleCount * 3);
-            const particleColors = new Float32Array(particleCount * 3);
-            const color = new THREE.Color();
-            
-            for(let i = 0; i < particleCount; i++) {
-                particlePositions[i*3] = (Math.random() - 0.5) * 10;
-                particlePositions[i*3+1] = Math.random() * 5;
-                particlePositions[i*3+2] = (Math.random() - 0.5) * 10;
-                color.setHSL(Math.random(), 1.0, 0.5);
-                particleColors[i*3] = color.r;
-                particleColors[i*3+1] = color.g;
-                particleColors[i*3+2] = color.b;
+                // 產生每片花瓣的隨機物理屬性
+                for (let j = 0; j < sakuraCountPerMesh; j++) {
+                    sakuraData.push({
+                        meshIndex: i,
+                        instanceIndex: j,
+                        x: (Math.random() - 0.5) * 10,  // X軸環繞空間 (-5 ~ 5)
+                        y: Math.random() * 10 - 2,      // Y軸高度 (-2 ~ 8)
+                        z: (Math.random() - 0.5) * 10,  // Z軸環繞空間 (-5 ~ 5)
+                        rotX: Math.random() * Math.PI * 2,
+                        rotY: Math.random() * Math.PI * 2,
+                        rotZ: Math.random() * Math.PI * 2,
+                        speedY: 0.3 + Math.random() * 0.7,    // 掉落速度
+                        swaySpeed: 0.5 + Math.random() * 1.5, // 左右搖擺速度
+                        swaySize: 0.5 + Math.random() * 1.5,  // 左右搖擺幅度
+                        rotSpeedX: (Math.random() - 0.5) * 2, // X軸旋轉速度
+                        rotSpeedY: (Math.random() - 0.5) * 2, // Y軸旋轉速度
+                        rotSpeedZ: (Math.random() - 0.5) * 2, // Z軸旋轉速度
+                        phase: Math.random() * Math.PI * 2,   // 正弦波相位偏移
+                        scale: 0.5 + Math.random() * 0.8      // 大小縮放
+                    });
+                }
             }
-            particleGeometry.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
-            particleGeometry.setAttribute('color', new THREE.BufferAttribute(particleColors, 3));
-            
-            const particleMaterial = new THREE.PointsMaterial({ size: 0.08, transparent: true, opacity: 0.9, vertexColors: true });
-            particles = new THREE.Points(particleGeometry, particleMaterial);
-            scene.add(particles);
         }
 
         function loadVRM(url) {
@@ -315,7 +320,6 @@
                         obj.frustumCulled = false;
                         if (obj.isMesh) {
                             obj.castShadow = true;
-                            // 即使移除了地板，這部分依然保留不影響
                             obj.receiveShadow = true;
                         }
                     });
@@ -341,7 +345,7 @@
                     console.error('模型載入失敗:', error);
                     if(loadingUI) loadingUI.classList.add('hidden');
                     if(errorUI) {
-                        errorUI.textContent = '無法載入預設模型 jerry.vrm，請確認檔案路徑。';
+                        errorUI.textContent = '無法載入模型，請確認檔案路徑或網路狀態。';
                         errorUI.classList.remove('hidden');
                     }
                 }
@@ -360,7 +364,6 @@
                 }
 
                 if (currentVrm.expressionManager) {
-                    // 1. 隨機表情計時器邏輯
                     expressionTimer += delta;
                     if (expressionTimer > 4.0) {
                         expressionTimer = 0;
@@ -373,10 +376,8 @@
                         if (expressionBlend > 1.0) expressionBlend = 1.0;
                     }
 
-                    // 2. 先清除所有表情
                     expressions.forEach(exp => currentVrm.expressionManager.setValue(exp, 0));
 
-                    // 3. 特殊動作處理
                     if (specialActionTimer > 0 && activeSpecialAction) {
                         specialActionTimer -= delta;
                         currentVrm.expressionManager.setValue(activeSpecialAction, 1.0);
@@ -385,7 +386,6 @@
                         activeSpecialAction = null;
                     }
 
-                    // 4. 講話時強制微笑且同步嘴型，不講話時才隨機表情
                     if (isSpeaking) {
                         currentVrm.expressionManager.setValue('happy', 1.0);
                         
@@ -406,7 +406,44 @@
                 currentVrm.update(delta);
             }
 
-            if (particles) particles.rotation.y += delta * 0.05;
+            // --- 新增：櫻花系統動畫更新 ---
+            if (sakuraMeshes.length > 0) {
+                for (let i = 0; i < sakuraData.length; i++) {
+                    const data = sakuraData[i];
+                    
+                    // 下降邏輯
+                    data.y -= data.speedY * delta;
+                    if (data.y < -2) { // 若掉落至底部，重新從模型上方生成
+                        data.y = 8;
+                        data.x = (Math.random() - 0.5) * 10;
+                        data.z = (Math.random() - 0.5) * 10;
+                    }
+
+                    // 左右輕微擺動 (Sine wave)，加入微幅 Z 軸擺動增加空間飄落感
+                    const currentX = data.x + Math.sin(time * data.swaySpeed + data.phase) * data.swaySize;
+                    const currentZ = data.z + Math.cos(time * data.swaySpeed * 0.8 + data.phase) * (data.swaySize * 0.5);
+
+                    // 三軸隨機旋轉
+                    data.rotX += data.rotSpeedX * delta;
+                    data.rotY += data.rotSpeedY * delta;
+                    data.rotZ += data.rotSpeedZ * delta;
+
+                    // 更新 dummy 對象的矩陣屬性
+                    sakuraDummy.position.set(currentX, data.y, currentZ);
+                    sakuraDummy.rotation.set(data.rotX, data.rotY, data.rotZ);
+                    sakuraDummy.scale.set(data.scale, data.scale, data.scale);
+                    sakuraDummy.updateMatrix();
+
+                    // 將算好的矩陣寫入對應的 InstancedMesh 中
+                    sakuraMeshes[data.meshIndex].setMatrixAt(data.instanceIndex, sakuraDummy.matrix);
+                }
+
+                // 標記實例矩陣已更新以觸發渲染
+                for (let i = 0; i < sakuraMeshes.length; i++) {
+                    sakuraMeshes[i].instanceMatrix.needsUpdate = true;
+                }
+            }
+
             controls.update();
             renderer.render(scene, camera);
         }
@@ -461,12 +498,10 @@
 
             chatInput.value = '';
             chatBubble.classList.remove('hidden');
-            // 修改使用者提示樣式
             chatText.innerHTML = `<span class="text-blue-800 text-sm opacity-70">你：${text}</span><br><span class="text-blue-900/60 text-sm animate-pulse">正在思考中...</span>`;
             setStatus('connecting');
             conversationHistory.push({ role: "user", parts: [{ text: text }] });
             
-            // 修正關鍵：在此處強制規定尋找答案的嚴格順序，解決 AI 隨機回答的行為
             const fullSystemInstruction = `${systemPromptText}\n\n【回答資料來源優先順序】\n1. 優先使用下方的【知識庫內容】來回答。\n2. 若知識庫中找不到答案，請務必使用 Google Search 工具搜尋網路資訊。\n3. 若網路上也找不到，再使用你的內建知識庫。\n4. 若以上皆無明確資訊（尤其是學校科系相關問題），請誠實回答「我不知道」，絕不可自行編造。\n\n【重要指示】\n為了讓系統正確解析動作，請務必「只」回傳純 JSON 格式的文字，不要加上 \`\`\`json 標籤或任何其他說明。JSON 格式必須為：\n{\n  \"reply\": \"你的回覆內容\",\n  \"expression\": \"情緒(neutral, happy, angry, sad, relaxed, surprised)\",\n  \"specialAction\": \"動作(none, blink, blinkLeft, blinkRight, aa)\",\n  \"actionDuration\": 3\n}\n\n【知識庫內容】\n${knowledgeBaseText}`;
 
             try {
@@ -487,7 +522,6 @@
                 const aiText = data.candidates[0].content.parts[0].text;
                 let replyText = aiText;
                 
-                // 強大的 Regex 提取 JSON，並優先顯示 reply 欄位
                 const jsonMatch = aiText.match(/\{[\s\S]*\}/);
                 
                 if (jsonMatch) {
@@ -511,7 +545,6 @@
                 }
 
                 setStatus('success');
-                // 更新顯示文字 (已移除 角色： 前綴)
                 chatText.innerHTML = `${replyText}`;
                 speakAndLipSync(replyText);
                 
@@ -546,7 +579,6 @@
             utterance.onend = () => { 
                 isSpeaking = false; 
                 if (window.keepAliveUtterances.length > 20) window.keepAliveUtterances.length = 0;
-                // 如果需要自動重啟麥克風，則在此時啟動
                 if (autoRestartMic && recognition && !isRecording) {
                     try {
                         recognition.start();
@@ -558,7 +590,6 @@
             utterance.onerror = (e) => {
                 console.warn('語音播放被中斷或發生錯誤:', e);
                 isSpeaking = false;
-                // 發生錯誤也嘗試重啟麥克風
                 if (autoRestartMic && recognition && !isRecording) {
                     try {
                         recognition.start();
@@ -579,7 +610,6 @@
                     if (confirmStopCount > 3) {
                         isSpeaking = false;
                         clearInterval(speechCheckInterval);
-                        // 雙重檢查：確保因為某種原因 onend 沒觸發時，也能重啟麥克風
                         if (autoRestartMic && recognition && !isRecording) {
                             try {
                                 recognition.start();
@@ -619,20 +649,18 @@
         let isRecording = false;
         let silenceTimeout = null;
 
-        // 偵測是否為手機或平板裝置 (包含 iPad 與 Android 行動裝置)
         const isMobileOrTablet = /Mobi|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || (navigator.maxTouchPoints && navigator.maxTouchPoints > 2 && /MacIntel/.test(navigator.platform));
 
         if (('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) && !isMobileOrTablet) {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             recognition = new SpeechRecognition();
             recognition.lang = 'zh-TW';
-            recognition.interimResults = true; // 開啟以偵測說話進度
-            recognition.continuous = true;     // 持續聆聽，直到手動停止或超時
+            recognition.interimResults = true;
+            recognition.continuous = true;     
             recognition.maxAlternatives = 1;
 
             recognition.onstart = function() {
                 isRecording = true;
-                // 改變麥克風按鈕外觀 (紅色呼吸燈)
                 micBtn.classList.remove('bg-white/20', 'text-blue-900');
                 micBtn.classList.add('bg-red-500/80', 'text-white', 'animate-pulse');
                 chatInput.placeholder = "聆聽中... (請說話)";
@@ -652,27 +680,19 @@
                 }
                 
                 if (finalTranscript !== '') {
-                    // 如果有最終結果，附加到輸入框中 (這裡簡化為直接替換，避免重複)
                     chatInput.value = finalTranscript;
                 } else if (interimTranscript !== '') {
-                    // 顯示暫時的結果
                     chatInput.value = interimTranscript;
                 }
 
-                // 只要有結果進來，就重置靜音計時器
                 resetSilenceTimeout();
             };
 
             recognition.onerror = function(event) {
                 console.error("語音辨識錯誤:", event.error);
-                // 發生錯誤不一定要清空 autoRestartMic，但通常 no-speech 等錯誤會導致停止
                 if (event.error === 'not-allowed') {
                     alert('請允許麥克風權限才能使用語音輸入喔！');
                     autoRestartMic = false;
-                }
-                // 避免在錯誤狀態下無限重啟
-                if (event.error === 'no-speech' || event.error === 'audio-capture') {
-                     // 可選擇是否要處理無語音的情況
                 }
             };
 
@@ -681,15 +701,13 @@
                 clearTimeout(silenceTimeout);
                 resetMicUI();
                 
-                // 語音輸入結束後，若有文字則自動觸發發送
                 if (chatInput.value.trim() !== '') {
                     window.speechSynthesis.cancel();
                     isSpeaking = false;
                     unlockAudioForIOS();
                     sendMessage();
-                    chatInput.value = ''; // 發送後清空
+                    chatInput.value = ''; 
                 } else if (autoRestartMic && !isSpeaking) {
-                    // 如果被意外中斷 (例如沒說話超時)，且設定為自動重啟，則再次啟動
                      try {
                         recognition.start();
                     } catch (e) {
@@ -698,7 +716,6 @@
                 }
             };
         } else {
-            // 不支援語音輸入的瀏覽器，或是手機/平板裝置 (隱藏麥克風按鈕)
             if(micBtn) micBtn.style.display = 'none';
             console.warn("此瀏覽器不支援 Web Speech API 語音輸入，或是正在使用行動裝置(手機/平板)已自動隱藏");
         }
@@ -710,15 +727,14 @@
             chatInput.placeholder = "與角色對話...";
         }
 
-        // 靜音計時器：2秒不說話自動送出
         function resetSilenceTimeout() {
             clearTimeout(silenceTimeout);
             if (isRecording) {
                 silenceTimeout = setTimeout(() => {
                     if (recognition && isRecording) {
-                        recognition.stop(); // 停止錄音會觸發 onend，進而發送訊息
+                        recognition.stop(); 
                     }
-                }, 2000); // 2秒鐘
+                }, 2000); 
             }
         }
 
@@ -727,13 +743,10 @@
                 if (!recognition) return;
                 
                 if (isRecording) {
-                    // 使用者手動關閉麥克風
-                    autoRestartMic = false; // 取 configurations自動重啟
+                    autoRestartMic = false; 
                     recognition.stop();
                 } else {
-                    // 使用者手動開啟麥克風
-                    autoRestartMic = true;  // 設定為自動重啟模式
-                    // 解鎖音訊並中斷目前AI說話
+                    autoRestartMic = true;  
                     window.speechSynthesis.cancel();
                     isSpeaking = false;
                     unlockAudioForIOS();
@@ -746,11 +759,9 @@
             });
         }
 
-        // 隨時點擊發送都能打斷講話
         sendBtn.addEventListener('click', () => {
             window.speechSynthesis.cancel();
             isSpeaking = false;
-            // 手動發送文字時，取消麥克風自動重啟
             autoRestartMic = false;
             if(isRecording && recognition) recognition.stop();
             unlockAudioForIOS();
@@ -761,7 +772,6 @@
             if (e.key === 'Enter') {
                 window.speechSynthesis.cancel();
                 isSpeaking = false;
-                // 手動發送文字時，取消麥克風自動重啟
                 autoRestartMic = false;
                 if(isRecording && recognition) recognition.stop();
                 unlockAudioForIOS();
@@ -769,7 +779,6 @@
             }
         });
 
-        // 監聽輸入框的改變，如果有手動輸入文字，則取消自動重啟麥克風
         chatInput.addEventListener('input', () => {
              if (chatInput.value.trim() !== '') {
                  autoRestartMic = false;
