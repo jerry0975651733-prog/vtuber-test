@@ -240,6 +240,8 @@
             fillLight.position.set(-2, 2, 2);
             scene.add(fillLight);
 
+            // 為了讓背景咖啡廳圖片完美顯示，已移除地板(floor)、網格(gridHelper)、底座(pedestal)與發光環(ring)
+            /*
             const floorGeometry = new THREE.PlaneGeometry(50, 50);
             const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x8a95a5, roughness: 0.6, metalness: 0.1 });
             const floor = new THREE.Mesh(floorGeometry, floorMaterial);
@@ -267,6 +269,7 @@
             ring.rotation.x = -Math.PI / 2;
             ring.position.y = 0.11;
             scene.add(ring);
+            */
 
             const particleCount = 200;
             const particleGeometry = new THREE.BufferGeometry();
@@ -312,6 +315,7 @@
                         obj.frustumCulled = false;
                         if (obj.isMesh) {
                             obj.castShadow = true;
+                            // 即使移除了地板，這部分依然保留不影響
                             obj.receiveShadow = true;
                         }
                     });
